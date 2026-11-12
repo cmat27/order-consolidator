@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase';
+import { shopifyGraphQL } from '@/lib/shopify';
+
+const WEBHOOK_SUBSCRIPTION_CREATE = `
+  mutation webhookSubscriptionCreate($topic: WebhookSubscriptionTopic!, $webhookSubscription: WebhookSubscriptionInput!) {
+    webhookSubscriptionCreate(topic: $topic, webhookSubscription: $webhookSubscription) {
+      webhookSubscription { id }
+      userErrors { field message }
+    }
+  }
+`;
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -95,8 +105,22 @@ export async function GET(req: NextRequest) {
     { onConflict: 'shop_id' }
   );
 
-  const redirectUrl = `${process.env.SHOPIFY_APP_URL}/?shop=${encodeURIComponent(
-    shop
-  )}`;
+  // Best-effort automatic registration of ORDERS_CREATE webhook
+  const appUrl = (
+    process.env.SHOPIFY_APP_URL || new URL(req.url).origin
+  ).replace(/\/$/, '');
+  try {
+    await shopifyGraphQL(shop, access_token, WEBHOOK_SUBSCRIPTION_CREATE, {
+      topic: 'ORDERS_CREATE',
+      webhookSubscription: {
+        callbackUrl: `${appUrl}/api/webhooks/orders-create`,
+        format: 'JSON',
+      },
+    });
+  } catch {
+    // Non-fatal if webhook is already registered or callbackUrl is localhost
+  }
+
+  const redirectUrl = `${appUrl}/?shop=${encodeURIComponent(shop)}`;
   return NextResponse.redirect(redirectUrl);
 }

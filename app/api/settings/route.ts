@@ -33,6 +33,7 @@ export async function GET(req: NextRequest) {
     if (!shop) {
       return NextResponse.json(
         {
+          installed: false,
           shopDomain: null,
           settings: {
             mergeWindowMinutes: 360,
@@ -63,6 +64,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(
       {
+        installed: true,
         shopDomain: shop.shop_domain,
         settings: {
           mergeWindowMinutes: settingsRow?.merge_window_minutes ?? 360,

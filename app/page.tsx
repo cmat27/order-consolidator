@@ -62,6 +62,7 @@ const INITIAL_AUDIT_FEED: ConsolidationRecord[] = [
 ];
 
 const MERGE_WINDOW_OPTIONS = [
+  { label: '1 Minute (Testing)', value: '1' },
   { label: '1 Hour', value: '60' },
   { label: '2 Hours', value: '120' },
   { label: '6 Hours (Recommended)', value: '360' },
@@ -91,6 +92,10 @@ export default function OrderConsolidatorDashboard() {
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!data) return;
+        if (shop && data.installed === false) {
+          window.location.href = `/api/auth?shop=${encodeURIComponent(shop)}`;
+          return;
+        }
         if (data.shopDomain) {
           setShopDomain(data.shopDomain);
         }

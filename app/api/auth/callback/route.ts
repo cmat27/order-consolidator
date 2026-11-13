@@ -18,9 +18,19 @@ export async function GET(req: NextRequest) {
   const code = searchParams.get('code');
   const hmac = searchParams.get('hmac');
 
-  if (!shop || !code || !hmac) {
+  if (!code || !hmac) {
+    const targetShop = shop || 'cartsync-dev-store.myshopify.com';
+    const appUrl = (
+      process.env.SHOPIFY_APP_URL || new URL(req.url).origin
+    ).replace(/\/$/, '');
+    return NextResponse.redirect(
+      `${appUrl}/api/auth?shop=${encodeURIComponent(targetShop)}`
+    );
+  }
+
+  if (!shop) {
     return NextResponse.json(
-      { error: 'Missing required OAuth query parameters' },
+      { error: 'Missing required shop query parameter' },
       { status: 400 }
     );
   }

@@ -112,8 +112,11 @@ export async function POST(req: NextRequest) {
   }
 
   // Query Shopify Admin GraphQL API for unfulfilled orders placed by customerEmail
+  // When using the 1-minute test debounce window, allow a 60-minute order comparison window
+  // so manually created test orders (>60s apart) still match cleanly.
+  const effectiveMatchWindowMinutes = Math.max(session.mergeWindowMinutes, 60);
   const cutoffDate = new Date(
-    Date.now() - session.mergeWindowMinutes * 60 * 1000 * 2
+    Date.now() - effectiveMatchWindowMinutes * 60 * 1000 * 2
   ).toISOString();
   const searchQuery = `email:${customerEmail} fulfillment_status:unfulfilled status:open created_at:>=${cutoffDate}`;
 
@@ -155,7 +158,7 @@ export async function POST(req: NextRequest) {
   const matchResult = matchDuplicateOrders(
     candidateOrders,
     orderId,
-    session.mergeWindowMinutes
+    effectiveMatchWindowMinutes
   );
 
   if (

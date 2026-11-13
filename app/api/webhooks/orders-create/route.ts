@@ -31,7 +31,17 @@ export async function POST(req: NextRequest) {
     token: process.env.QSTASH_TOKEN!,
     ...(process.env.QSTASH_URL ? { baseUrl: process.env.QSTASH_URL } : {}),
   });
-  const appUrl = process.env.SHOPIFY_APP_URL || 'http://localhost:3000';
+  const configuredUrl = process.env.SHOPIFY_APP_URL;
+  const hostHeader =
+    req.headers.get('x-forwarded-host') || req.headers.get('host');
+  const requestOrigin = hostHeader
+    ? `${req.headers.get('x-forwarded-proto') || 'https'}://${hostHeader}`
+    : new URL(req.url).origin;
+  const appUrl = (
+    configuredUrl && !configuredUrl.includes('example.com')
+      ? configuredUrl
+      : requestOrigin
+  ).replace(/\/$/, '');
   const workerUrl = `${appUrl}/api/workers/consolidate`;
 
   const payload = {

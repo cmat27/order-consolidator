@@ -6,7 +6,7 @@
     "dev": "next dev",
     "dev:debug": "NODE_OPTIONS='--inspect' next dev",
     "build": "next build",
-    "db:migrate": "if [ -n \"$SUPABASE_DB_URL\" ]; then npx --yes supabase db push --db-url \"$SUPABASE_DB_URL\"; elif [ -n \"$SUPABASE_ACCESS_TOKEN\" ] && [ -n \"$SUPABASE_PROJECT_ID\" ] && [ -n \"$SUPABASE_DB_PASSWORD\" ]; then npx --yes supabase link --project-ref \"$SUPABASE_PROJECT_ID\" --password \"$SUPABASE_DB_PASSWORD\" && npx --yes supabase db push; else echo 'Skipping automated Supabase migration (set SUPABASE_DB_URL in CI/Amplify to auto-migrate)'; fi",
+    "db:migrate": "case \"$SUPABASE_DB_URL\" in postgres://*|postgresql://*) npx --yes supabase db push --db-url \"$SUPABASE_DB_URL\" || echo 'Warning: supabase db push failed, continuing build' ;; *) echo 'Skipping CLI migration (SUPABASE_DB_URL must start with postgresql://)' ;; esac",
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest"

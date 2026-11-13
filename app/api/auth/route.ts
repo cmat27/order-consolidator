@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   ).replace(/\/$/, '');
   const scopes =
     process.env.SCOPES ||
-    'read_orders,write_orders,read_customers,write_customers,read_fulfillments,write_fulfillments';
+    'read_orders,write_orders,read_order_edits,write_order_edits,read_products,read_customers,write_customers,read_fulfillments,write_fulfillments';
 
   if (!apiKey || !apiSecret) {
     return NextResponse.json(
@@ -47,10 +47,14 @@ export async function GET(req: NextRequest) {
     });
 
     if (tokenRes.ok) {
-      const { access_token } = (await tokenRes.json()) as {
+      const { access_token, scope: grantedScope } = (await tokenRes.json()) as {
         access_token?: string;
+        scope?: string;
       };
-      if (access_token) {
+      if (
+        access_token &&
+        (!grantedScope || grantedScope.includes('write_order_edits'))
+      ) {
         const { data: upsertedShop } = await supabaseAdmin
           .from('shops')
           .upsert(

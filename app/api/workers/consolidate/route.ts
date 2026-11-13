@@ -32,7 +32,14 @@ interface GraphQLOrderNode {
   lineItems?: {
     nodes?: Array<{
       id: string;
+      title?: string;
       quantity: number;
+      originalUnitPriceSet?: {
+        shopMoney?: {
+          amount?: string;
+          currencyCode?: string;
+        };
+      };
       variant?: {
         id: string;
       } | null;
@@ -138,7 +145,10 @@ export async function POST(req: NextRequest) {
     lineItems: (node.lineItems?.nodes || []).map((li) => ({
       id: li.id,
       variantId: li.variant?.id || '',
+      title: li.title || 'Consolidated Item',
       quantity: li.quantity,
+      priceAmount: li.originalUnitPriceSet?.shopMoney?.amount || '0.00',
+      currencyCode: li.originalUnitPriceSet?.shopMoney?.currencyCode || 'USD',
     })),
   }));
 

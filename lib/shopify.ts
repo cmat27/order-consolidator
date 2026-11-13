@@ -65,6 +65,53 @@ export async function shopifyGraphQL<T = Record<string, unknown>>(
     body: JSON.stringify({ query, variables }),
   });
 
+  if (response.status === 401 || response.status === 403) {
+    // Attempt automatic token refresh via Client Credentials Grant if configured
+    const apiKey = process.env.SHOPIFY_API_KEY;
+    const apiSecret = process.env.SHOPIFY_API_SECRET;
+    if (apiKey && apiSecret && !apiKey.startsWith('test_')) {
+      const refreshRes = await fetch(
+        `https://${shopDomain}/admin/oauth/access_token`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'client_credentials',
+            client_id: apiKey,
+            client_secret: apiSecret,
+          }),
+        }
+      ).catch(() => null);
+
+      if (refreshRes && refreshRes.ok) {
+        const { access_token: newToken } = (await refreshRes.json()) as {
+          access_token?: string;
+        };
+        if (newToken && newToken !== accessToken) {
+          await supabaseAdmin
+            .from('shops')
+            .update({
+              access_token: newToken,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('shop_domain', shopDomain);
+
+          const retryRes = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Shopify-Access-Token': newToken,
+            },
+            body: JSON.stringify({ query, variables }),
+          });
+          if (retryRes.ok) {
+            return (await retryRes.json()) as GraphQLResponse<T>;
+          }
+        }
+      }
+    }
+  }
+
   if (!response.ok) {
     throw new Error(
       `Shopify GraphQL request failed with status ${response.status}: ${await response.text()}`

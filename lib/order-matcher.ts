@@ -4,7 +4,10 @@ import { shopifyGraphQL } from './shopify';
 export interface CandidateLineItem {
   id: string;
   variantId: string;
+  title?: string;
   quantity: number;
+  priceAmount?: string;
+  currencyCode?: string;
 }
 
 export interface CandidateOrder {
@@ -55,7 +58,14 @@ export const UNFULFILLED_ORDERS_QUERY = `
         lineItems(first: 50) {
           nodes {
             id
+            title
             quantity
+            originalUnitPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
             variant {
               id
             }
@@ -83,6 +93,20 @@ export const ORDER_EDIT_BEGIN_MUTATION = `
 export const ORDER_EDIT_ADD_VARIANT_MUTATION = `
   mutation orderEditAddVariant($id: ID!, $variantId: ID!, $quantity: Int!) {
     orderEditAddVariant(id: $id, variantId: $variantId, quantity: $quantity) {
+      calculatedLineItem {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+export const ORDER_EDIT_ADD_CUSTOM_ITEM_MUTATION = `
+  mutation orderEditAddCustomItem($id: ID!, $title: String!, $quantity: Int!, $price: MoneyInput!) {
+    orderEditAddCustomItem(id: $id, title: $title, quantity: $quantity, price: $price) {
       calculatedLineItem {
         id
       }
@@ -251,43 +275,74 @@ export async function executeOrderConsolidation(params: {
   const calculatedOrderId =
     editBeginRes.data?.orderEditBegin?.calculatedOrder?.id;
   const beginErrors = editBeginRes.data?.orderEditBegin?.userErrors || [];
+  const topLevelErrors = editBeginRes.errors || [];
 
-  if (!calculatedOrderId || beginErrors.length > 0) {
+  if (!calculatedOrderId || beginErrors.length > 0 || topLevelErrors.length > 0) {
     return {
       success: false,
       itemsConsolidatedCount: 0,
       shippingDollarsSaved: 0,
       errorMessage:
         beginErrors.map((e) => e.message).join('; ') ||
+        topLevelErrors.map((e) => e.message).join('; ') ||
         'Failed to start orderEditBegin',
     };
   }
 
-  // 2. Add each variant from the duplicate order
+  // 2. Add each line item from the duplicate order
   let itemsConsolidatedCount = 0;
   for (const item of duplicateOrder.lineItems) {
-    if (!item.variantId) continue;
-    const addVariantRes = await shopifyGraphQL<{
-      orderEditAddVariant: {
-        calculatedLineItem: { id: string } | null;
-        userErrors: Array<{ field: string[]; message: string }>;
-      };
-    }>(shopDomain, accessToken, ORDER_EDIT_ADD_VARIANT_MUTATION, {
-      id: calculatedOrderId,
-      variantId: item.variantId,
-      quantity: item.quantity,
-    });
+    if (item.variantId) {
+      const addVariantRes = await shopifyGraphQL<{
+        orderEditAddVariant: {
+          calculatedLineItem: { id: string } | null;
+          userErrors: Array<{ field: string[]; message: string }>;
+        };
+      }>(shopDomain, accessToken, ORDER_EDIT_ADD_VARIANT_MUTATION, {
+        id: calculatedOrderId,
+        variantId: item.variantId,
+        quantity: item.quantity,
+      });
 
-    const addErrors = addVariantRes.data?.orderEditAddVariant?.userErrors || [];
-    if (addErrors.length > 0) {
-      return {
-        success: false,
-        itemsConsolidatedCount,
-        shippingDollarsSaved: 0,
-        errorMessage: addErrors.map((e) => e.message).join('; '),
-      };
+      const addErrors =
+        addVariantRes.data?.orderEditAddVariant?.userErrors || [];
+      if (addErrors.length > 0) {
+        return {
+          success: false,
+          itemsConsolidatedCount,
+          shippingDollarsSaved: 0,
+          errorMessage: addErrors.map((e) => e.message).join('; '),
+        };
+      }
+      itemsConsolidatedCount += item.quantity;
+    } else if (item.title) {
+      const addCustomRes = await shopifyGraphQL<{
+        orderEditAddCustomItem: {
+          calculatedLineItem: { id: string } | null;
+          userErrors: Array<{ field: string[]; message: string }>;
+        };
+      }>(shopDomain, accessToken, ORDER_EDIT_ADD_CUSTOM_ITEM_MUTATION, {
+        id: calculatedOrderId,
+        title: item.title,
+        quantity: item.quantity,
+        price: {
+          amount: item.priceAmount || '0.00',
+          currencyCode: item.currencyCode || 'USD',
+        },
+      });
+
+      const addErrors =
+        addCustomRes.data?.orderEditAddCustomItem?.userErrors || [];
+      if (addErrors.length > 0) {
+        return {
+          success: false,
+          itemsConsolidatedCount,
+          shippingDollarsSaved: 0,
+          errorMessage: addErrors.map((e) => e.message).join('; '),
+        };
+      }
+      itemsConsolidatedCount += item.quantity;
     }
-    itemsConsolidatedCount += item.quantity;
   }
 
   // 3. Commit order edit

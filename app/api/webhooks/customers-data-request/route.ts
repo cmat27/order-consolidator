@@ -5,7 +5,7 @@ export async function POST(req: NextRequest) {
   const hmac = req.headers.get('x-shopify-hmac-sha256');
   const rawBody = await req.text();
 
-  if (hmac && !verifyShopifyWebhook(rawBody, hmac, process.env.SHOPIFY_API_SECRET!)) {
+  if (!verifyShopifyWebhook(rawBody, hmac, process.env.SHOPIFY_API_SECRET!)) {
     return NextResponse.json({ error: 'Unauthorized HMAC' }, { status: 401 });
   }
 

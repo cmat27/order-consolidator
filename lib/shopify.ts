@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { supabaseAdmin } from './supabase';
 
 export const SHOPIFY_API_VERSION = '2024-10';
@@ -8,12 +9,69 @@ export interface GraphQLResponse<T = Record<string, unknown>> {
 }
 
 /**
+ * Verifies a Shopify App Bridge JWT session token (HS256 signed with SHOPIFY_API_SECRET)
+ * and returns the authenticated shop domain (`*.myshopify.com`).
+ */
+export function verifyShopifySessionToken(
+  authHeader: string | null,
+  secret: string | undefined
+): string | null {
+  if (!authHeader || !secret || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+
+  const token = authHeader.slice(7).trim();
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const expectedSig = crypto
+    .createHmac('sha256', secret)
+    .update(`${headerB64}.${payloadB64}`)
+    .digest('base64url');
+
+  const sigBuf = Buffer.from(signatureB64);
+  const expectedBuf = Buffer.from(expectedSig);
+  if (
+    sigBuf.length !== expectedBuf.length ||
+    !crypto.timingSafeEqual(sigBuf, expectedBuf)
+  ) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(
+      Buffer.from(payloadB64, 'base64url').toString('utf8')
+    ) as {
+      exp?: number;
+      nbf?: number;
+      dest?: string;
+      aud?: string;
+    };
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp < nowSec - 5) return null;
+    if (payload.nbf && payload.nbf > nowSec + 5) return null;
+
+    if (payload.dest) {
+      const url = new URL(payload.dest);
+      return url.hostname;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Retrieves the offline access token for a given shop domain from Supabase.
  */
 export async function getShopSession(shopDomain: string): Promise<{
   id: string;
   shopDomain: string;
   accessToken: string;
+  subscriptionStatus: string;
+  subscriptionId: string | null;
   mergeWindowMinutes: number;
   autoRefundShipping: boolean;
   notifyCustomer: boolean;
@@ -21,7 +79,7 @@ export async function getShopSession(shopDomain: string): Promise<{
   const { data: shop, error } = await supabaseAdmin
     .from('shops')
     .select(
-      'id, shop_domain, access_token, is_active, app_settings(merge_window_minutes, auto_refund_shipping, notify_customer)'
+      '*, app_settings(merge_window_minutes, auto_refund_shipping, notify_customer)'
     )
     .eq('shop_domain', shopDomain)
     .eq('is_active', true)
@@ -39,6 +97,8 @@ export async function getShopSession(shopDomain: string): Promise<{
     id: shop.id,
     shopDomain: shop.shop_domain,
     accessToken: shop.access_token,
+    subscriptionStatus: shop.subscription_status || 'UNSUBSCRIBED',
+    subscriptionId: shop.subscription_id || null,
     mergeWindowMinutes: settings?.merge_window_minutes ?? 360,
     autoRefundShipping: settings?.auto_refund_shipping ?? true,
     notifyCustomer: settings?.notify_customer ?? true,

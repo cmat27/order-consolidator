@@ -90,7 +90,7 @@ export async function GET(req: NextRequest) {
     // Fall back to standard OAuth authorize redirect below
   }
 
-  // 2. Fallback to standard OAuth authorization code redirect
+  // 2. Fallback to standard OAuth authorization code redirect with state nonce cookie
   const state = crypto.randomBytes(16).toString('hex');
   const redirectUri = `${appUrl}/api/auth/callback`;
 
@@ -100,5 +100,14 @@ export async function GET(req: NextRequest) {
   authorizeUrl.searchParams.set('redirect_uri', redirectUri);
   authorizeUrl.searchParams.set('state', state);
 
-  return NextResponse.redirect(authorizeUrl.toString());
+  const response = NextResponse.redirect(authorizeUrl.toString());
+  response.cookies.set('shopify_oauth_state', state, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 600,
+  });
+
+  return response;
 }

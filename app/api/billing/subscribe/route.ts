@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getShopSession, shopifyGraphQL } from '@/lib/shopify';
+import {
+  getShopSession,
+  shopifyGraphQL,
+  verifyShopifySessionToken,
+} from '@/lib/shopify';
+import { supabaseAdmin } from '@/lib/supabase';
 
 const APP_SUBSCRIPTION_CREATE = `
-  mutation AppSubscriptionCreate($name: String!, $returnUrl: URL!, $trialDays: Int!, $price: Decimal!) {
+  mutation AppSubscriptionCreate($name: String!, $returnUrl: URL!, $trialDays: Int!, $price: Decimal!, $test: Boolean!) {
     appSubscriptionCreate(
       name: $name
       returnUrl: $returnUrl
       trialDays: $trialDays
+      test: $test
       lineItems: [{
         plan: {
           appRecurringPricingDetails: {
@@ -16,7 +22,7 @@ const APP_SUBSCRIPTION_CREATE = `
         }
       }]
     ) {
-      appSubscription { id }
+      appSubscription { id status }
       confirmationUrl
       userErrors { field message }
     }
@@ -25,8 +31,15 @@ const APP_SUBSCRIPTION_CREATE = `
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const shopDomain = body.shopDomain || req.headers.get('x-shopify-shop-domain');
+    const body = await req.json().catch(() => ({}));
+    const verifiedShop = verifyShopifySessionToken(
+      req.headers.get('authorization'),
+      process.env.SHOPIFY_API_SECRET
+    );
+    const shopDomain =
+      verifiedShop ||
+      body.shopDomain ||
+      req.headers.get('x-shopify-shop-domain');
 
     if (!shopDomain) {
       return NextResponse.json(
@@ -43,13 +56,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const returnUrl = `${process.env.SHOPIFY_APP_URL}?shop=${encodeURIComponent(
+    const appUrl = (
+      process.env.SHOPIFY_APP_URL || new URL(req.url).origin
+    ).replace(/\/$/, '');
+    const returnUrl = `${appUrl}/?shop=${encodeURIComponent(
       shopDomain
-    )}`;
+    )}&billing=confirmed`;
+
+    const isTestCharge =
+      process.env.NODE_ENV !== 'production' || Boolean(body.test);
 
     const response = await shopifyGraphQL<{
       appSubscriptionCreate: {
-        appSubscription: { id: string } | null;
+        appSubscription: { id: string; status?: string } | null;
         confirmationUrl: string | null;
         userErrors: Array<{ field: string[]; message: string }>;
       };
@@ -58,6 +77,7 @@ export async function POST(req: NextRequest) {
       returnUrl,
       trialDays: 14,
       price: 19.0,
+      test: isTestCharge,
     });
 
     const payload = response.data?.appSubscriptionCreate;
@@ -72,9 +92,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const subscriptionId = payload.appSubscription?.id || null;
+    const status = (payload.appSubscription?.status || 'PENDING').toUpperCase();
+
+    await supabaseAdmin
+      .from('shops')
+      .update({
+        subscription_id: subscriptionId,
+        subscription_status: status,
+        trial_ends_at: new Date(
+          Date.now() + 14 * 24 * 60 * 60 * 1000
+        ).toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', session.id);
+
     return NextResponse.json(
       {
-        subscriptionId: payload.appSubscription?.id,
+        subscriptionId,
+        subscriptionStatus: status,
         confirmationUrl: payload.confirmationUrl,
       },
       { status: 200 }

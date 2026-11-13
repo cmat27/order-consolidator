@@ -7,6 +7,7 @@ frontend:
     build:
       commands:
         - env | grep -E '^(SHOPIFY_|SUPABASE_|NEXT_PUBLIC_|QSTASH_|SCOPES)' >> .env.production || true
+        - npm run db:migrate
         - npm run build
   artifacts:
     baseDirectory: .next

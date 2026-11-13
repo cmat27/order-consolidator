@@ -1,80 +1,95 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { verifyShopifySessionToken } from '@/lib/shopify';
 
-async function resolveShop(shopDomain?: string | null) {
+async function resolveShop(req: NextRequest, explicitShopDomain?: string | null) {
+  // 1. Prefer verified Shopify App Bridge session token if present
+  const verifiedShop = verifyShopifySessionToken(
+    req.headers.get('authorization'),
+    process.env.SHOPIFY_API_SECRET
+  );
+  const shopDomain =
+    verifiedShop ||
+    explicitShopDomain ||
+    req.headers.get('x-shopify-shop-domain');
+
   if (shopDomain) {
     const { data } = await supabaseAdmin
       .from('shops')
-      .select('id, shop_domain')
+      .select('*')
       .eq('shop_domain', shopDomain)
       .eq('is_active', true)
       .maybeSingle();
     if (data) return data;
   }
 
-  const { data: fallbackShop } = await supabaseAdmin
-    .from('shops')
-    .select('id, shop_domain')
-    .eq('is_active', true)
-    .order('installed_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // Only allow fallback to most recent shop in non-production local development when no specific shop was requested
+  if (!shopDomain && process.env.NODE_ENV !== 'production') {
+    const { data: fallbackShop } = await supabaseAdmin
+      .from('shops')
+      .select('*')
+      .eq('is_active', true)
+      .order('installed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-  if (fallbackShop) return fallbackShop;
+    if (fallbackShop) return fallbackShop;
+  }
 
-  // Auto-bootstrap via Client Credentials Grant if installed in Shopify Dev Dashboard
-  const candidateDomain = shopDomain || 'cartsync-dev-store.myshopify.com';
-  const apiKey = process.env.SHOPIFY_API_KEY;
-  const apiSecret = process.env.SHOPIFY_API_SECRET;
-  if (apiKey && apiSecret && !apiKey.startsWith('test_')) {
-    try {
-      const tokenRes = await fetch(
-        `https://${candidateDomain}/admin/oauth/access_token`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            grant_type: 'client_credentials',
-            client_id: apiKey,
-            client_secret: apiSecret,
-          }),
-        }
-      );
-      if (tokenRes.ok) {
-        const { access_token } = (await tokenRes.json()) as {
-          access_token?: string;
-        };
-        if (access_token) {
-          const { data: created } = await supabaseAdmin
-            .from('shops')
-            .upsert(
-              {
-                shop_domain: candidateDomain,
-                access_token,
-                is_active: true,
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: 'shop_domain' }
-            )
-            .select('id, shop_domain')
-            .single();
+  // Auto-bootstrap via Client Credentials Grant if installed in Shopify Dev Dashboard for the requested shop
+  if (shopDomain) {
+    const apiKey = process.env.SHOPIFY_API_KEY;
+    const apiSecret = process.env.SHOPIFY_API_SECRET;
+    if (apiKey && apiSecret && !apiKey.startsWith('test_')) {
+      try {
+        const tokenRes = await fetch(
+          `https://${shopDomain}/admin/oauth/access_token`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              grant_type: 'client_credentials',
+              client_id: apiKey,
+              client_secret: apiSecret,
+            }),
+          }
+        );
+        if (tokenRes.ok) {
+          const { access_token } = (await tokenRes.json()) as {
+            access_token?: string;
+          };
+          if (access_token) {
+            const { data: created } = await supabaseAdmin
+              .from('shops')
+              .upsert(
+                {
+                  shop_domain: shopDomain,
+                  access_token,
+                  is_active: true,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: 'shop_domain' }
+              )
+              .select('*')
+              .single();
 
-          if (created) {
-            await supabaseAdmin.from('app_settings').upsert(
-              {
-                shop_id: created.id,
-                merge_window_minutes: 360,
-                auto_refund_shipping: true,
-                notify_customer: true,
-              },
-              { onConflict: 'shop_id' }
-            );
-            return created;
+            if (created) {
+              await supabaseAdmin.from('app_settings').upsert(
+                {
+                  shop_id: created.id,
+                  merge_window_minutes: 360,
+                  auto_refund_shipping: true,
+                  notify_customer: true,
+                },
+                { onConflict: 'shop_id' }
+              );
+              return created;
+            }
           }
         }
+      } catch {
+        // Ignore if not installed on store yet
       }
-    } catch {
-      // Ignore if not installed on store yet
     }
   }
 
@@ -84,15 +99,16 @@ async function resolveShop(shopDomain?: string | null) {
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const shopParam =
-      searchParams.get('shop') || req.headers.get('x-shopify-shop-domain');
+    const shopParam = searchParams.get('shop');
 
-    const shop = await resolveShop(shopParam);
+    const shop = await resolveShop(req, shopParam);
     if (!shop) {
       return NextResponse.json(
         {
           installed: false,
           shopDomain: null,
+          subscriptionStatus: 'UNSUBSCRIBED',
+          subscriptionId: null,
           settings: {
             mergeWindowMinutes: 360,
             autoRefundShipping: true,
@@ -124,6 +140,8 @@ export async function GET(req: NextRequest) {
       {
         installed: true,
         shopDomain: shop.shop_domain,
+        subscriptionStatus: shop.subscription_status || 'UNSUBSCRIBED',
+        subscriptionId: shop.subscription_id || null,
         settings: {
           mergeWindowMinutes: settingsRow?.merge_window_minutes ?? 360,
           autoRefundShipping: settingsRow?.auto_refund_shipping ?? true,
@@ -163,13 +181,12 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const shopParam =
-      body.shopDomain || req.headers.get('x-shopify-shop-domain');
+    const shopParam = body.shopDomain;
     const mergeWindowMinutes = Number(body.mergeWindowMinutes) || 360;
     const autoRefundShipping = Boolean(body.autoRefundShipping);
     const notifyCustomer = Boolean(body.notifyCustomer);
 
-    const shop = await resolveShop(shopParam);
+    const shop = await resolveShop(req, shopParam);
     if (!shop) {
       return NextResponse.json(
         {

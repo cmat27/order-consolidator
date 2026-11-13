@@ -17,6 +17,7 @@ export async function GET(req: NextRequest) {
   const shop = searchParams.get('shop');
   const code = searchParams.get('code');
   const hmac = searchParams.get('hmac');
+  const state = searchParams.get('state');
 
   if (!code || !hmac) {
     const targetShop = shop || 'cartsync-dev-store.myshopify.com';
@@ -32,6 +33,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       { error: 'Missing required shop query parameter' },
       { status: 400 }
+    );
+  }
+
+  // Verify OAuth state cookie if present
+  const stateCookie = req.cookies.get('shopify_oauth_state')?.value;
+  if (stateCookie && state !== stateCookie) {
+    return NextResponse.json(
+      { error: 'Invalid OAuth state parameter' },
+      { status: 403 }
     );
   }
 
@@ -115,22 +125,34 @@ export async function GET(req: NextRequest) {
     { onConflict: 'shop_id' }
   );
 
-  // Best-effort automatic registration of ORDERS_CREATE webhook
+  // Automatic registration of required webhooks (ORDERS_CREATE, APP_UNINSTALLED, APP_SUBSCRIPTIONS_UPDATE)
   const appUrl = (
     process.env.SHOPIFY_APP_URL || new URL(req.url).origin
   ).replace(/\/$/, '');
-  try {
-    await shopifyGraphQL(shop, access_token, WEBHOOK_SUBSCRIPTION_CREATE, {
-      topic: 'ORDERS_CREATE',
-      webhookSubscription: {
-        callbackUrl: `${appUrl}/api/webhooks/orders-create`,
-        format: 'JSON',
-      },
-    });
-  } catch {
-    // Non-fatal if webhook is already registered or callbackUrl is localhost
-  }
+
+  const webhooksToRegister = [
+    { topic: 'ORDERS_CREATE', path: '/api/webhooks/orders-create' },
+    { topic: 'APP_UNINSTALLED', path: '/api/webhooks/app-uninstalled' },
+    {
+      topic: 'APP_SUBSCRIPTIONS_UPDATE',
+      path: '/api/webhooks/app-subscriptions-update',
+    },
+  ];
+
+  await Promise.allSettled(
+    webhooksToRegister.map((wh) =>
+      shopifyGraphQL(shop, access_token, WEBHOOK_SUBSCRIPTION_CREATE, {
+        topic: wh.topic,
+        webhookSubscription: {
+          callbackUrl: `${appUrl}${wh.path}`,
+          format: 'JSON',
+        },
+      })
+    )
+  );
 
   const redirectUrl = `${appUrl}/?shop=${encodeURIComponent(shop)}`;
-  return NextResponse.redirect(redirectUrl);
+  const response = NextResponse.redirect(redirectUrl);
+  response.cookies.delete('shopify_oauth_state');
+  return response;
 }

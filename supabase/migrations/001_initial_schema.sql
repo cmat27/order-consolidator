@@ -4,6 +4,9 @@ CREATE TABLE IF NOT EXISTS public.shops (
     shop_domain TEXT UNIQUE NOT NULL,
     access_token TEXT NOT NULL,
     is_active BOOLEAN DEFAULT true,
+    subscription_id TEXT,
+    subscription_status TEXT DEFAULT 'UNSUBSCRIBED',
+    trial_ends_at TIMESTAMPTZ,
     installed_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

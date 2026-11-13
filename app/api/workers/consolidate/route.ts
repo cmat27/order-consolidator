@@ -14,6 +14,7 @@ interface GraphQLOrderNode {
   name: string;
   createdAt: string;
   email: string | null;
+  currencyCode?: string;
   displayFulfillmentStatus: string;
   cancelledAt: string | null;
   shippingAddress?: {
@@ -27,13 +28,27 @@ interface GraphQLOrderNode {
   totalShippingPriceSet?: {
     shopMoney?: {
       amount?: string;
+      currencyCode?: string;
     };
+  };
+  fulfillmentOrders?: {
+    nodes?: Array<{
+      assignedLocation?: {
+        location?: {
+          fulfillmentService?: {
+            serviceName?: string;
+            type?: string;
+          } | null;
+        } | null;
+      } | null;
+    }>;
   };
   lineItems?: {
     nodes?: Array<{
       id: string;
       title?: string;
       quantity: number;
+      isGiftCard?: boolean;
       originalUnitPriceSet?: {
         shopMoney?: {
           amount?: string;
@@ -45,6 +60,23 @@ interface GraphQLOrderNode {
       } | null;
     }>;
   };
+}
+
+function detectExternal3PL(node: GraphQLOrderNode): boolean {
+  const fos = node.fulfillmentOrders?.nodes || [];
+  return fos.some((fo) => {
+    const svc = fo.assignedLocation?.location?.fulfillmentService;
+    if (!svc) return false;
+    if (svc.type === 'THIRD_PARTY') return true;
+    const name = (svc.serviceName || '').toLowerCase();
+    return (
+      name.includes('amazon') ||
+      name.includes('mcf') ||
+      name.includes('shipbob') ||
+      name.includes('deliverr') ||
+      name.includes('3pl')
+    );
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -112,9 +144,9 @@ export async function POST(req: NextRequest) {
   }
 
   // Query Shopify Admin GraphQL API for unfulfilled orders placed by customerEmail
-  // When using the 1-minute test debounce window, allow a 60-minute order comparison window
-  // so manually created test orders (>60s apart) still match cleanly.
-  const effectiveMatchWindowMinutes = Math.max(session.mergeWindowMinutes, 60);
+  // Only expand the 1-minute testing window to 60 minutes so manual test orders (>60s apart) still match
+  const effectiveMatchWindowMinutes =
+    session.mergeWindowMinutes === 1 ? 60 : session.mergeWindowMinutes;
   const cutoffDate = new Date(
     Date.now() - effectiveMatchWindowMinutes * 60 * 1000 * 2
   ).toISOString();
@@ -132,6 +164,12 @@ export async function POST(req: NextRequest) {
     name: node.name,
     createdAt: node.createdAt,
     email: node.email || customerEmail,
+    currencyCode:
+      node.currencyCode ||
+      node.totalShippingPriceSet?.shopMoney?.currencyCode ||
+      payload.currency ||
+      'USD',
+    hasExternal3PL: detectExternal3PL(node),
     displayFulfillmentStatus: node.displayFulfillmentStatus,
     cancelledAt: node.cancelledAt,
     shippingAddress: {
@@ -150,6 +188,7 @@ export async function POST(req: NextRequest) {
       variantId: li.variant?.id || '',
       title: li.title || 'Consolidated Item',
       quantity: li.quantity,
+      isGiftCard: Boolean(li.isGiftCard),
       priceAmount: li.originalUnitPriceSet?.shopMoney?.amount || '0.00',
       currencyCode: li.originalUnitPriceSet?.shopMoney?.currencyCode || 'USD',
     })),

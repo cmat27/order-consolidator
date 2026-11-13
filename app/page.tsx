@@ -72,19 +72,27 @@ const MERGE_WINDOW_OPTIONS = [
 
 export default function OrderConsolidatorDashboard() {
   const [shopDomain, setShopDomain] = useState<string | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] =
+    useState<string>('UNSUBSCRIBED');
   const [mergeWindow, setMergeWindow] = useState<string>('360');
   const [autoRefundShipping, setAutoRefundShipping] = useState<boolean>(true);
   const [notifyCustomer, setNotifyCustomer] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
-  const [toastActive, setToastActive] = useState<boolean>(false);
+  const [subscribing, setSubscribing] = useState<boolean>(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] =
     useState<ConsolidationRecord[]>(INITIAL_AUDIT_FEED);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const shop = params.get('shop');
+    const billingConfirmed = params.get('billing') === 'confirmed';
     if (shop) {
       setShopDomain(shop);
+    }
+    if (billingConfirmed) {
+      setSubscriptionStatus('ACTIVE');
+      setToastMessage('14-day free trial ($19/month) activated.');
     }
 
     const query = shop ? `?shop=${encodeURIComponent(shop)}` : '';
@@ -98,6 +106,9 @@ export default function OrderConsolidatorDashboard() {
         }
         if (data.shopDomain) {
           setShopDomain(data.shopDomain);
+        }
+        if (data.subscriptionStatus && !billingConfirmed) {
+          setSubscriptionStatus(data.subscriptionStatus);
         }
         if (data.settings) {
           setMergeWindow(String(data.settings.mergeWindowMinutes ?? 360));
@@ -129,16 +140,42 @@ export default function OrderConsolidatorDashboard() {
       if (!response.ok) {
         throw new Error('Failed to save settings');
       }
-      setToastActive(true);
+      setToastMessage('Consolidation settings saved successfully.');
     } finally {
       setSaving(false);
     }
   }, [shopDomain, mergeWindow, autoRefundShipping, notifyCustomer]);
 
-  const toggleToast = useCallback(
-    () => setToastActive((active) => !active),
-    []
-  );
+  const handleSubscribe = useCallback(async () => {
+    setSubscribing(true);
+    try {
+      const response = await fetch('/api/billing/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shopDomain: shopDomain || 'cartsync-dev-store.myshopify.com',
+        }),
+      });
+      const data = await response.json();
+      if (response.ok && data.confirmationUrl) {
+        if (window.top) {
+          window.top.location.href = data.confirmationUrl;
+        } else {
+          window.location.href = data.confirmationUrl;
+        }
+        return;
+      }
+      setToastMessage(
+        data.error || 'Unable to initiate Shopify billing confirmation.'
+      );
+    } catch {
+      setToastMessage('Failed to connect to billing endpoint.');
+    } finally {
+      setSubscribing(false);
+    }
+  }, [shopDomain]);
+
+  const dismissToast = useCallback(() => setToastMessage(null), []);
 
   const totalOrdersConsolidated = auditLogs.filter(
     (log) => log.status === 'SUCCESS'
@@ -147,6 +184,9 @@ export default function OrderConsolidatorDashboard() {
   const totalShippingSaved = auditLogs
     .filter((log) => log.status === 'SUCCESS')
     .reduce((sum, log) => sum + log.dollarsSaved, 0);
+
+  const isSubscribed =
+    subscriptionStatus === 'ACTIVE' || subscriptionStatus === 'PENDING';
 
   const tableRows = auditLogs.slice(0, 20).map((log) => [
     log.date,
@@ -197,6 +237,38 @@ export default function OrderConsolidatorDashboard() {
                   </Box>
                 </InlineStack>
               </Banner>
+            </Layout.Section>
+
+            <Layout.Section>
+              <Card>
+                <InlineStack align="space-between" blockAlign="center">
+                  <BlockStack gap="100">
+                    <InlineStack gap="200" blockAlign="center">
+                      <Text as="h2" variant="headingMd">
+                        Order Consolidator Pro — $19/month
+                      </Text>
+                      <Badge tone={isSubscribed ? 'success' : 'attention'}>
+                        {isSubscribed
+                          ? `Plan: ${subscriptionStatus}`
+                          : '14-Day Free Trial Available'}
+                      </Badge>
+                    </InlineStack>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Flat-rate unlimited order consolidations, automated
+                      shipping refunds, and 3PL/gift-card safety guardrails.
+                    </Text>
+                  </BlockStack>
+                  {!isSubscribed && (
+                    <Button
+                      variant="primary"
+                      loading={subscribing}
+                      onClick={handleSubscribe}
+                    >
+                      Start 14-Day Free Trial ($19/mo)
+                    </Button>
+                  )}
+                </InlineStack>
+              </Card>
             </Layout.Section>
 
             <Layout.Section>
@@ -271,11 +343,8 @@ export default function OrderConsolidatorDashboard() {
             </Layout.Section>
           </Layout>
 
-          {toastActive && (
-            <Toast
-              content="Consolidation settings saved successfully."
-              onDismiss={toggleToast}
-            />
+          {toastMessage && (
+            <Toast content={toastMessage} onDismiss={dismissToast} />
           )}
         </Page>
       </Frame>

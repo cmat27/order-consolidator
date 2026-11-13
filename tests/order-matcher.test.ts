@@ -12,6 +12,7 @@ describe('matchDuplicateOrders', () => {
     name: '#1001',
     createdAt: '2026-11-07T10:00:00Z',
     email: 'customer@example.com',
+    currencyCode: 'USD',
     displayFulfillmentStatus: 'UNFULFILLED',
     cancelledAt: null,
     shippingAddress: {
@@ -106,6 +107,70 @@ describe('matchDuplicateOrders', () => {
 
     expect(result.matched).toBe(false);
   });
+
+  it('bypasses orders containing gift cards', () => {
+    const giftCardOrder: CandidateOrder = {
+      ...baseOrder,
+      id: 'gid://shopify/Order/1005',
+      name: '#1005',
+      createdAt: '2026-11-07T11:00:00Z',
+      lineItems: [
+        {
+          id: 'gid://shopify/LineItem/5',
+          variantId: 'gid://shopify/ProductVariant/505',
+          quantity: 1,
+          isGiftCard: true,
+        },
+      ],
+    };
+
+    const result = matchDuplicateOrders(
+      [baseOrder, giftCardOrder],
+      'gid://shopify/Order/1005',
+      360
+    );
+
+    expect(result.matched).toBe(false);
+    expect(result.reason).toContain('gift card');
+  });
+
+  it('bypasses orders routed to external 3PL fulfillment services (e.g. Amazon MCF)', () => {
+    const external3plOrder: CandidateOrder = {
+      ...baseOrder,
+      id: 'gid://shopify/Order/1006',
+      name: '#1006',
+      createdAt: '2026-11-07T11:00:00Z',
+      hasExternal3PL: true,
+    };
+
+    const result = matchDuplicateOrders(
+      [baseOrder, external3plOrder],
+      'gid://shopify/Order/1006',
+      360
+    );
+
+    expect(result.matched).toBe(false);
+    expect(result.reason).toContain('3PL');
+  });
+
+  it('bypasses orders when currency codes do not match', () => {
+    const cadOrder: CandidateOrder = {
+      ...baseOrder,
+      id: 'gid://shopify/Order/1007',
+      name: '#1007',
+      createdAt: '2026-11-07T11:00:00Z',
+      currencyCode: 'CAD',
+    };
+
+    const result = matchDuplicateOrders(
+      [baseOrder, cadOrder],
+      'gid://shopify/Order/1007',
+      360
+    );
+
+    expect(result.matched).toBe(false);
+    expect(result.reason).toContain('currency code mismatch');
+  });
 });
 
 describe('executeOrderConsolidation', () => {
@@ -113,9 +178,14 @@ describe('executeOrderConsolidation', () => {
     vi.restoreAllMocks();
   });
 
-  it('executes orderEditBegin, orderEditAddVariant, orderEditCommit, orderCancel, and refundCreate', async () => {
+  it('executes orderEditBegin, orderEditAddVariant, orderEditAddLineItemDiscount, orderEditCommit, tagsAdd, orderCancel (refund: false), and refundCreate', async () => {
+    const calls: Array<{ query: string; variables?: Record<string, unknown> }> =
+      [];
+
     const spy = vi.spyOn(shopifyModule, 'shopifyGraphQL').mockImplementation(
-      async (_shop, _token, query) => {
+      async (_shop, _token, query, variables) => {
+        calls.push({ query, variables });
+
         if (query.includes('orderEditBegin')) {
           return {
             data: {
@@ -136,11 +206,33 @@ describe('executeOrderConsolidation', () => {
             },
           };
         }
+        if (query.includes('orderEditAddLineItemDiscount')) {
+          return {
+            data: {
+              orderEditAddLineItemDiscount: {
+                addedDiscountStagedChange: {
+                  id: 'gid://shopify/OrderStagedChangeAddCustomDiscount/1',
+                },
+                userErrors: [],
+              },
+            },
+          };
+        }
         if (query.includes('orderEditCommit')) {
           return {
             data: {
               orderEditCommit: {
                 order: { id: 'gid://shopify/Order/1001' },
+                userErrors: [],
+              },
+            },
+          };
+        }
+        if (query.includes('tagsAdd')) {
+          return {
+            data: {
+              tagsAdd: {
+                node: { id: 'gid://shopify/Order/1001' },
                 userErrors: [],
               },
             },
@@ -208,6 +300,12 @@ describe('executeOrderConsolidation', () => {
     expect(res.success).toBe(true);
     expect(res.itemsConsolidatedCount).toBe(3);
     expect(res.shippingDollarsSaved).toBe(7.95);
-    expect(spy).toHaveBeenCalledTimes(5);
+    // 1: orderEditBegin, 2: orderEditAddVariant, 3: orderEditAddLineItemDiscount,
+    // 4: orderEditCommit, 5 & 6: tagsAdd (primary + duplicate), 7: orderCancel, 8: refundCreate
+    expect(spy).toHaveBeenCalledTimes(8);
+
+    const cancelCall = calls.find((c) => c.query.includes('orderCancel'));
+    expect(cancelCall?.variables?.refund).toBe(false);
+    expect(cancelCall?.variables?.restock).toBe(true);
   });
 });
